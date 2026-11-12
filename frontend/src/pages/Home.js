@@ -2,7 +2,11 @@ import React, { useCallback, useEffect, useState } from 'react';
 import TaskForm from '../components/TaskForm';
 import TaskList from '../components/TaskList';
 import FilterBar from '../components/FilterBar';
+import StatsBar from '../components/StatsBar';
+import Toast from '../components/Toast';
+import ConfirmModal from '../components/ConfirmModal';
 import * as TaskService from '../services/task-service';
+import { filterTasks, getTaskCounts } from '../utils/filter-tasks';
 
 /**
  * Main page. Owns the task state and talks to the API through TaskService,
@@ -12,16 +16,18 @@ const Home = () => {
   const [tasks, setTasks] = useState([]);
   const [filter, setFilter] = useState('all');
   const [taskToEdit, setTaskToEdit] = useState(null);
+  const [taskToDelete, setTaskToDelete] = useState(null);
+  const [toast, setToast] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
   /**
-   * Loads tasks for the current filter from the server
+   * Loads all tasks from the server. Filtering happens on the client,
+   * which keeps the counts accurate and the filter instant.
    */
   const loadTasks = useCallback(async () => {
-    setLoading(true);
     try {
-      const data = await TaskService.getTasks(filter);
+      const data = await TaskService.getTasks('all');
       setTasks(data);
       setError('');
     } catch (err) {
@@ -29,23 +35,38 @@ const Home = () => {
     } finally {
       setLoading(false);
     }
-  }, [filter]);
+  }, []);
 
-  // Reload whenever the filter changes
+  // Load tasks once when the page opens
   useEffect(() => {
     loadTasks();
   }, [loadTasks]);
 
   /**
-   * Creates a new task or saves edits, depending on the current mode
+   * Shows a toast message
+   * @param {string} message - Text to show
+   * @param {string} [type='success'] - 'success' or 'error'
+   */
+  const showToast = (message, type = 'success') => {
+    setToast({ message, type });
+  };
+
+  // Stable function so the Toast timer is not reset on every render
+  const closeToast = useCallback(() => setToast(null), []);
+
+  /**
+   * Creates a new task or saves edits, depending on the current mode.
+   * Errors are thrown back to TaskForm so it can show them under the form.
    * @param {Object} formData - Data from TaskForm
    */
   const handleSubmit = async (formData) => {
     if (taskToEdit) {
       await TaskService.updateTask(taskToEdit._id, formData);
       setTaskToEdit(null);
+      showToast('Task updated');
     } else {
       await TaskService.createTask(formData);
+      showToast('Task added');
     }
     await loadTasks();
   };
@@ -56,27 +77,29 @@ const Home = () => {
    */
   const handleToggle = async (id) => {
     try {
-      await TaskService.toggleTask(id);
+      const updated = await TaskService.toggleTask(id);
+      showToast(updated.completed ? 'Task completed' : 'Task moved back to pending');
       await loadTasks();
     } catch (err) {
-      setError(err.message);
+      showToast(err.message, 'error');
     }
   };
 
   /**
-   * Deletes a task after the user confirms
-   * @param {string} id - Task id
+   * Deletes the task chosen in the confirmation dialog
    */
-  const handleDelete = async (id) => {
-    if (!window.confirm('Delete this task?')) return;
+  const handleConfirmDelete = async () => {
+    const { _id: id } = taskToDelete;
+    setTaskToDelete(null);
 
     try {
       await TaskService.deleteTask(id);
       // If the deleted task was being edited, leave edit mode
       if (taskToEdit && taskToEdit._id === id) setTaskToEdit(null);
+      showToast('Task deleted');
       await loadTasks();
     } catch (err) {
-      setError(err.message);
+      showToast(err.message, 'error');
     }
   };
 
@@ -89,11 +112,14 @@ const Home = () => {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
+  const counts = getTaskCounts(tasks);
+  const visibleTasks = filterTasks(tasks, filter);
+
   return (
     <div className="app">
       <header className="app-header">
         <h1>Task Tracker</h1>
-        <p>Keep track of what needs doing.</p>
+        <p>Plan your day, tick things off, stay on top of it.</p>
       </header>
 
       <main className="app-layout">
@@ -106,17 +132,29 @@ const Home = () => {
         </section>
 
         <section className="panel">
-          <FilterBar activeFilter={filter} onFilterChange={setFilter} />
+          <StatsBar counts={counts} />
+          <FilterBar activeFilter={filter} onFilterChange={setFilter} counts={counts} />
           {error && <p className="form-error">{error}</p>}
           <TaskList
-            tasks={tasks}
+            tasks={visibleTasks}
+            filter={filter}
             loading={loading}
             onToggle={handleToggle}
             onEdit={handleEdit}
-            onDelete={handleDelete}
+            onDelete={setTaskToDelete}
           />
         </section>
       </main>
+
+      {taskToDelete && (
+        <ConfirmModal
+          task={taskToDelete}
+          onConfirm={handleConfirmDelete}
+          onCancel={() => setTaskToDelete(null)}
+        />
+      )}
+
+      {toast && <Toast message={toast.message} type={toast.type} onClose={closeToast} />}
     </div>
   );
 };
